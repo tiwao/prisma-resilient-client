@@ -110,17 +110,24 @@ docs/
 
 ## 実装状況
 
-**Phase 1: MVP開発（現在のステータス）**
+**Phase 1: MVP開発（✅ 完了）**
 - [x] プロジェクト構造作成
 - [x] 型定義実装(`src/types.ts`)
-- [ ] ResilientPrismaClient クラス実装
-- [ ] 自動再接続ロジック実装
-- [ ] Proxyによるメソッドラップ実装
+- [x] ResilientPrismaClient クラス実装
+- [x] 自動再接続ロジック実装
+- [x] Proxyによるメソッドラップ実装
+- [x] 定期リフレッシュ機能
+- [x] ヘルスチェック機能
+- [x] メモリ管理機能
+- [x] イベントシステム
 
-**未実装の主要ファイル**:
-- `src/index.ts` - メインエクスポート
-- `src/ResilientPrismaClient.ts` - コアクラス
-- `src/utils/` - ユーティリティ関数（エラー検出、バックオフ計算等）
+**現在のバージョン**: v0.1.1 (2025-10-31)
+
+**最近のバグ修正 (v0.1.1)**:
+- 定期リフレッシュの堅牢性向上
+  - `src/ResilientPrismaClient.ts:147`: disconnect失敗時も`connected`フラグを確実にfalseに設定
+  - `src/ResilientPrismaClient.ts:277-283`: リフレッシュ処理で`ensureConnected()`を使用して再接続のリトライロジックを活用
+  - `src/ResilientPrismaClient.ts:288`: リフレッシュ失敗時も`connected`フラグをfalseに設定し、次回操作時の再接続を保証
 
 ## グローバル指示との連携
 

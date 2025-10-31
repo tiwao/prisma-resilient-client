@@ -338,4 +338,21 @@ This package has been battle-tested in production with:
 
 **Made with ❤️ for the Prisma community**
 
-**Status**: ✅ Production-ready (v0.1.0) - Successfully deployed and tested
+**Status**: ✅ Production-ready (v0.1.1) - Successfully deployed and tested
+
+## Change Log
+
+### v0.1.1 (2025-10-31)
+**Bug Fixes:**
+- 定期リフレッシュの堅牢性向上
+  - disconnect失敗時も`connected`フラグを確実にfalseに設定
+  - リフレッシュ処理で`ensureConnected()`を使用して再接続のリトライロジックを活用
+  - リフレッシュ失敗時も`connected`フラグをfalseに設定し、次回操作時の再接続を保証
+
+### v0.1.0 (2025-10-31)
+**Initial Release:**
+- 自動再接続機能の実装
+- 定期的な接続リフレッシュ機能
+- ヘルスチェック機能
+- メモリ管理機能
+- イベントシステム

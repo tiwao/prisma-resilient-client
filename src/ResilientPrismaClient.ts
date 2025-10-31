@@ -144,6 +144,8 @@ export class ResilientPrismaClient extends EventEmitter {
       this.connected = false;
       this.log('info', 'Disconnected from database');
     } catch (error) {
+      // Even if disconnect fails, mark as disconnected to allow reconnection
+      this.connected = false;
       this.log('error', 'Error during disconnect:', error);
     }
   }
@@ -272,11 +274,20 @@ export class ResilientPrismaClient extends EventEmitter {
     this.refreshTimer = setInterval(async () => {
       this.log('debug', 'Performing periodic connection refresh...');
       try {
+        // Mark as disconnected first to ensure clean state
+        this.connected = false;
+
+        // Disconnect old connection (ignore errors)
         await this.disconnect();
-        await this.connect();
+
+        // Reconnect using ensureConnected for robust retry logic
+        await this.ensureConnected();
+
         this.log('info', 'Connection refreshed successfully');
       } catch (error) {
         this.log('error', 'Failed to refresh connection:', error);
+        // Ensure we're marked as disconnected so next operation will retry
+        this.connected = false;
       }
     }, this.config.refresh.intervalMs || 300000);
   }
