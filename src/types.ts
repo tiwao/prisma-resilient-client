@@ -31,6 +31,25 @@ export interface ResilientConfig {
      * @default 'exponential'
      */
     backoff?: 'linear' | 'exponential';
+
+    /**
+     * Enable hard reset (recreate PrismaClient) on final reconnection attempt
+     * Requires factory function to be provided in constructor
+     * @default true
+     */
+    hardResetOnFinalAttempt?: boolean;
+
+    /**
+     * Maximum consecutive errors before triggering hard reset
+     * @default 10
+     */
+    maxConsecutiveErrors?: number;
+
+    /**
+     * Maximum connection age in milliseconds before preventive hard reset
+     * @default 64800000 (18 hours)
+     */
+    maxConnectionAge?: number;
   };
 
   /**
@@ -176,6 +195,21 @@ export interface ConnectionStats {
    * Total number of errors encountered
    */
   errorCount: number;
+
+  /**
+   * Number of consecutive errors
+   */
+  consecutiveErrors: number;
+
+  /**
+   * Total number of hard resets performed
+   */
+  totalHardResets: number;
+
+  /**
+   * Connection age in milliseconds
+   */
+  connectionAge: number;
 }
 
 /**
@@ -250,4 +284,9 @@ export interface ResilientPrismaEvents {
    * Emitted when garbage collection is executed
    */
   'gc:executed': () => void;
+
+  /**
+   * Emitted when hard reset (PrismaClient recreation) is performed
+   */
+  'hard-reset': () => void;
 }

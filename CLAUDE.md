@@ -121,9 +121,46 @@ docs/
 - [x] メモリ管理機能
 - [x] イベントシステム
 
-**現在のバージョン**: v0.1.1 (2025-10-31)
+**Phase 2: 高度な機能（✅ 完了 - v0.2.0）**
+- [x] Hard Reset機能（PrismaClient再作成）
+- [x] Factory Function対応
+- [x] 連続エラー追跡と自動リカバリ
+- [x] 接続年齢管理とプリベンティブリセット
+- [x] 統計情報の拡張
 
-**最近のバグ修正 (v0.1.1)**:
+**現在のバージョン**: v0.2.0 (2025-11-01)
+
+**主要な機能追加 (v0.2.0)**:
+- **Hard Reset機能**: `src/ResilientPrismaClient.ts:172-215`
+  - PrismaClientインスタンスを完全に再作成
+  - Prisma Engine内部状態の破損から復旧
+  - ファクトリ関数が必要（コンストラクタで提供）
+
+- **Factory Function対応**: `src/ResilientPrismaClient.ts:61`
+  - `new ResilientPrismaClient(() => new PrismaClient())`形式をサポート
+  - Hard Reset機能を有効化
+
+- **連続エラー追跡**: `src/ResilientPrismaClient.ts:341-361`
+  - `consecutiveErrors`カウンターで連続エラーを追跡
+  - 閾値（デフォルト10）を超えるとハードリセットをトリガー
+  - 成功時にカウンターをリセット
+
+- **接続年齢管理**: `src/ResilientPrismaClient.ts:220-234`
+  - 接続の年齢を追跡（デフォルト最大18時間）
+  - 定期リフレッシュ時に年齢をチェック
+  - 最大年齢を超えたらプリベンティブにハードリセット
+
+- **拡張された設定オプション**: `src/types.ts:34-51`
+  - `hardResetOnFinalAttempt`: 最終試行時のハードリセット有効化
+  - `maxConsecutiveErrors`: 連続エラー閾値
+  - `maxConnectionAge`: 接続最大年齢
+
+- **拡張された統計情報**: `src/types.ts:198-212`
+  - `consecutiveErrors`: 現在の連続エラー数
+  - `totalHardResets`: 累計ハードリセット回数
+  - `connectionAge`: 接続の年齢（ミリ秒）
+
+**バグ修正 (v0.1.1)**:
 - 定期リフレッシュの堅牢性向上
   - `src/ResilientPrismaClient.ts:147`: disconnect失敗時も`connected`フラグを確実にfalseに設定
   - `src/ResilientPrismaClient.ts:277-283`: リフレッシュ処理で`ensureConnected()`を使用して再接続のリトライロジックを活用

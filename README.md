@@ -16,6 +16,8 @@ This package solves all these problems with a drop-in replacement for `PrismaCli
 ## Features
 
 - ✅ **Automatic Reconnection** - Handles connection drops gracefully
+- ✅ **Hard Reset Support** - Recreates PrismaClient on severe issues (v0.2.0+)
+- ✅ **Connection Age Management** - Preventive resets for long-running servers
 - ✅ **Connection State Management** - Know when you're connected
 - ✅ **Health Checks** - Built-in endpoint support
 - ✅ **Memory Management** - Automatic GC triggering
@@ -39,12 +41,11 @@ pnpm add prisma-resilient-client
 import { PrismaClient } from '@prisma/client';
 import { ResilientPrismaClient } from 'prisma-resilient-client';
 
-// Create your PrismaClient as usual
+// Option 1: Wrap existing PrismaClient instance
 const basePrisma = new PrismaClient({
   log: ['error', 'warn'],
 });
 
-// Wrap it with ResilientPrismaClient
 const resilientClient = new ResilientPrismaClient(basePrisma, {
   reconnect: {
     maxAttempts: 3,
@@ -55,6 +56,17 @@ const resilientClient = new ResilientPrismaClient(basePrisma, {
     intervalMs: 5 * 60 * 1000, // 5 minutes
   },
 });
+
+// Option 2: Use factory function (enables hard reset feature)
+const resilientClient = new ResilientPrismaClient(
+  () => new PrismaClient({ log: ['error', 'warn'] }),
+  {
+    reconnect: {
+      maxAttempts: 3,
+      hardResetOnFinalAttempt: true, // Enable hard reset
+    },
+  }
+);
 
 // Get the wrapped Prisma client
 const prisma = resilientClient.getClient();
@@ -70,15 +82,23 @@ const user = await prisma.user.create({
 ### Full Configuration Options
 
 ```typescript
+// Option A: Instance-based (basic reconnection only)
 const basePrisma = new PrismaClient({ /* your Prisma config */ });
+const resilientClient = new ResilientPrismaClient(basePrisma, { /* config */ });
 
-const resilientClient = new ResilientPrismaClient(basePrisma, {
+// Option B: Factory-based (enables hard reset features) - RECOMMENDED
+const resilientClient = new ResilientPrismaClient(
+  () => new PrismaClient({ /* your Prisma config */ }),
+  {
     // Reconnection settings
     reconnect: {
-      maxAttempts: 3,              // Maximum retry attempts
-      initialDelay: 1000,          // Initial delay in ms
-      maxDelay: 10000,             // Maximum delay in ms
-      backoff: 'exponential',      // 'linear' or 'exponential'
+      maxAttempts: 3,                      // Maximum retry attempts
+      initialDelay: 1000,                  // Initial delay in ms
+      maxDelay: 10000,                     // Maximum delay in ms
+      backoff: 'exponential',              // 'linear' or 'exponential'
+      hardResetOnFinalAttempt: true,       // Enable hard reset on final attempt
+      maxConsecutiveErrors: 10,            // Trigger hard reset after N errors
+      maxConnectionAge: 18 * 60 * 60 * 1000, // 18 hours max age
     },
 
     // Periodic refresh
@@ -136,7 +156,10 @@ console.log(stats);
 //   lastSuccessfulConnection: '2025-10-31T02:03:45.000Z',
 //   uptime: 3600000,
 //   queryCount: 1250,
-//   errorCount: 0
+//   errorCount: 0,
+//   consecutiveErrors: 0,      // v0.2.0+
+//   totalHardResets: 1,        // v0.2.0+
+//   connectionAge: 3600000     // v0.2.0+
 // }
 ```
 
@@ -184,6 +207,11 @@ resilientClient.on('memory:high', (usage) => {
 
 resilientClient.on('gc:executed', () => {
   console.log('Garbage collection executed');
+});
+
+// Hard reset event (v0.2.0+)
+resilientClient.on('hard-reset', () => {
+  console.log('PrismaClient instance recreated');
 });
 ```
 
@@ -239,25 +267,38 @@ const resilientClient = new ResilientPrismaClient(basePrisma, {
 const prisma = resilientClient.getClient();
 ```
 
-### Long-Running Server
+### Long-Running Server (Recommended: Factory Function)
 
 ```typescript
-const basePrisma = new PrismaClient();
-const resilientClient = new ResilientPrismaClient(basePrisma, {
-  refresh: {
-    enabled: true,
-    intervalMs: 5 * 60 * 1000, // Refresh every 5 minutes
-  },
-  memory: {
-    autoGC: true,
-    gcThreshold: 0.85, // GC at 85% heap usage
-  },
-});
+// Use factory function for long-running servers
+const resilientClient = new ResilientPrismaClient(
+  () => new PrismaClient({ log: ['error', 'warn'] }),
+  {
+    reconnect: {
+      maxAttempts: 3,
+      hardResetOnFinalAttempt: true,
+      maxConsecutiveErrors: 10,
+      maxConnectionAge: 18 * 60 * 60 * 1000, // 18 hours
+    },
+    refresh: {
+      enabled: true,
+      intervalMs: 5 * 60 * 1000, // Refresh every 5 minutes
+    },
+    memory: {
+      autoGC: true,
+      gcThreshold: 0.85, // GC at 85% heap usage
+    },
+  }
+);
 
 const prisma = resilientClient.getClient();
 
-// Server will automatically maintain connection health
-// All queries use prisma, which has auto-reconnection built in!
+// Server will automatically:
+// - Reconnect on connection failures
+// - Perform hard reset after 10 consecutive errors
+// - Recreate client after 18 hours of uptime (preventive)
+// - Refresh connection every 5 minutes
+// - Trigger GC at 85% heap usage
 ```
 
 ## How It Works
@@ -273,9 +314,35 @@ const prisma = resilientClient.getClient();
    ↓
 4. Wait with backoff strategy
    ↓
-5. Retry original operation
+5. On final attempt: Try hard reset if enabled
    ↓
-6. Success or throw after max attempts
+6. Retry original operation
+   ↓
+7. Success or throw after max attempts
+```
+
+### Hard Reset Mechanism (v0.2.0+)
+
+Hard reset recreates the entire PrismaClient instance, which resolves:
+- Prisma Engine internal state corruption
+- Persistent connection issues
+- Long-running connection degradation
+
+**Trigger conditions:**
+1. Final reconnection attempt (if `hardResetOnFinalAttempt: true`)
+2. Consecutive errors exceed threshold (default: 10)
+3. Connection age exceeds limit (default: 18 hours)
+
+```
+Normal reconnect attempt fails
+   ↓
+Disconnect old PrismaClient
+   ↓
+Create new PrismaClient (factory)
+   ↓
+Connect new instance
+   ↓
+Reset error counters
 ```
 
 ### Connection Refresh
@@ -338,9 +405,30 @@ This package has been battle-tested in production with:
 
 **Made with ❤️ for the Prisma community**
 
-**Status**: ✅ Production-ready (v0.1.1) - Successfully deployed and tested
+**Status**: ✅ Production-ready (v0.2.0) - Successfully deployed and tested
 
 ## Change Log
+
+### v0.2.0 (2025-11-01)
+**Major Features:**
+- **Hard Reset機能の追加**: PrismaClientインスタンスを再作成することで、Prisma Engine内部状態の破損から復旧
+  - `hardResetOnFinalAttempt`: 最終再接続試行時のハードリセット有効化
+  - `maxConsecutiveErrors`: 連続エラー閾値でハードリセットをトリガー（デフォルト: 10）
+  - `maxConnectionAge`: 接続最大時間でプリベンティブリセット（デフォルト: 18時間）
+- **Factory Function対応**: コンストラクタでファクトリ関数を受け入れ、ハードリセット機能を有効化
+- **連続エラー追跡**: `consecutiveErrors`カウンターを追加し、成功時にリセット
+- **接続年齢管理**: 長時間稼働サーバー向けにプリベンティブリセット機能を実装
+- **統計情報拡張**: `getConnectionStats()`に`consecutiveErrors`、`totalHardResets`、`connectionAge`を追加
+- **イベント追加**: `hard-reset`イベントでPrismaClient再作成を通知
+
+**Technical Details:**
+- `src/ResilientPrismaClient.ts:61`: Factory関数対応のコンストラクタ
+- `src/ResilientPrismaClient.ts:172-215`: ハードリセット実装
+- `src/ResilientPrismaClient.ts:220-234`: 接続年齢チェック
+- `src/ResilientPrismaClient.ts:253-266`: 最終試行時のハードリセット
+- `src/ResilientPrismaClient.ts:341-361`: 連続エラー検出とハードリセット
+- `src/types.ts:34-51`: 新しい設定オプション
+- `src/types.ts:198-212`: 拡張された統計情報
 
 ### v0.1.1 (2025-10-31)
 **Bug Fixes:**

@@ -31,6 +31,9 @@ const DEFAULT_CONFIG: Required<Omit<ResilientConfig, 'onError'>> = {
     initialDelay: 1000,
     maxDelay: 10000,
     backoff: 'exponential',
+    hardResetOnFinalAttempt: true,
+    maxConsecutiveErrors: 10,
+    maxConnectionAge: 18 * 60 * 60 * 1000, // 18 hours
   },
   refresh: {
     enabled: true,
@@ -55,6 +58,7 @@ const DEFAULT_CONFIG: Required<Omit<ResilientConfig, 'onError'>> = {
  */
 export class ResilientPrismaClient extends EventEmitter {
   private prisma: PrismaClient;
+  private prismaFactory: (() => PrismaClient) | null = null;
   private config: Required<Omit<ResilientConfig, 'onError'>> & Pick<ResilientConfig, 'onError'>;
   private logger: Logger;
 
@@ -62,7 +66,10 @@ export class ResilientPrismaClient extends EventEmitter {
   private connected: boolean = false;
   private reconnectAttempts: number = 0;
   private totalReconnects: number = 0;
+  private totalHardResets: number = 0;
+  private consecutiveErrors: number = 0;
   private lastSuccessfulConnection: Date | null = null;
+  private connectionCreatedAt: Date = new Date();
   private queryCount: number = 0;
   private errorCount: number = 0;
 
@@ -71,12 +78,24 @@ export class ResilientPrismaClient extends EventEmitter {
   private healthCheckTimer: NodeJS.Timeout | null = null;
 
   /**
-   * Create ResilientPrismaClient by wrapping an existing PrismaClient instance
+   * Create ResilientPrismaClient by wrapping an existing PrismaClient instance or factory
+   * @param prismaClientOrFactory - PrismaClient instance or factory function
+   * @param resilientConfig - Configuration options
    */
-  constructor(prismaClient: PrismaClient, resilientConfig?: ResilientConfig) {
+  constructor(
+    prismaClientOrFactory: PrismaClient | (() => PrismaClient),
+    resilientConfig?: ResilientConfig
+  ) {
     super();
 
-    this.prisma = prismaClient;
+    // Support both instance and factory function
+    if (typeof prismaClientOrFactory === 'function') {
+      this.prismaFactory = prismaClientOrFactory;
+      this.prisma = prismaClientOrFactory();
+    } else {
+      this.prisma = prismaClientOrFactory;
+      this.prismaFactory = null;
+    }
 
     // Merge configurations
     this.config = {
@@ -151,6 +170,70 @@ export class ResilientPrismaClient extends EventEmitter {
   }
 
   /**
+   * Perform hard reset by recreating PrismaClient instance
+   * This resolves Prisma Engine internal state corruption
+   */
+  private async hardReset(): Promise<void> {
+    if (!this.prismaFactory) {
+      throw new Error(
+        'Hard reset not available: PrismaClient factory function not provided. ' +
+        'Please pass a factory function to the constructor to enable hard reset.'
+      );
+    }
+
+    this.log('warn', '🔄 Performing hard reset (recreating PrismaClient)...');
+
+    try {
+      // Disconnect old instance
+      await this.prisma.$disconnect();
+    } catch (error) {
+      this.log('warn', 'Error disconnecting old PrismaClient:', error);
+    }
+
+    // Clear reference to old instance (allow GC)
+    this.prisma = null as any;
+
+    // Force garbage collection if available
+    if (this.config.memory.autoGC) {
+      triggerGC();
+    }
+
+    // Create new PrismaClient instance
+    this.prisma = this.prismaFactory();
+    this.connectionCreatedAt = new Date();
+
+    // Connect new instance
+    await this.prisma.$connect();
+    this.connected = true;
+    this.lastSuccessfulConnection = new Date();
+    this.reconnectAttempts = 0;
+    this.consecutiveErrors = 0;
+    this.totalHardResets++;
+
+    this.emit('hard-reset');
+    this.log('info', `✅ Hard reset successful (total: ${this.totalHardResets})`);
+  }
+
+  /**
+   * Check if connection age exceeds maximum and perform preventive hard reset
+   */
+  private async checkConnectionAge(): Promise<void> {
+    if (!this.prismaFactory || !this.config.reconnect.maxConnectionAge) {
+      return;
+    }
+
+    const connectionAge = Date.now() - this.connectionCreatedAt.getTime();
+    if (connectionAge > this.config.reconnect.maxConnectionAge) {
+      this.log(
+        'warn',
+        `⏰ Connection age (${Math.round(connectionAge / 1000 / 60 / 60)}h) exceeds maximum, ` +
+        `performing preventive hard reset...`
+      );
+      await this.hardReset();
+    }
+  }
+
+  /**
    * Ensure connection is established
    */
   private async ensureConnected(): Promise<void> {
@@ -167,7 +250,21 @@ export class ResilientPrismaClient extends EventEmitter {
       this.log('info', `Reconnection attempt ${attempt}/${maxAttempts}`);
 
       try {
-        // Disconnect first to clean up
+        // On final attempt, try hard reset if available and enabled
+        if (
+          attempt === maxAttempts &&
+          this.prismaFactory &&
+          this.config.reconnect.hardResetOnFinalAttempt
+        ) {
+          this.log('warn', '🔧 Final attempt: trying hard reset...');
+          await this.hardReset();
+          this.totalReconnects++;
+          this.emit('reconnect:success');
+          this.log('info', 'Reconnection successful via hard reset');
+          return;
+        }
+
+        // Standard reconnect attempt
         await this.disconnect();
 
         // Wait with backoff
@@ -216,6 +313,7 @@ export class ResilientPrismaClient extends EventEmitter {
 
       // Update stats
       this.queryCount++;
+      this.consecutiveErrors = 0; // Reset on success
       const duration = Date.now() - startTime;
       this.log('debug', `${operationName} completed in ${duration}ms`);
 
@@ -237,9 +335,31 @@ export class ResilientPrismaClient extends EventEmitter {
       return result;
     } catch (error) {
       this.errorCount++;
+      this.consecutiveErrors++;
       const duration = Date.now() - startTime;
 
-      this.log('error', `${operationName} failed:`, error);
+      this.log('error', `${operationName} failed (consecutive errors: ${this.consecutiveErrors}):`, error);
+
+      // Check for excessive consecutive errors and trigger hard reset
+      const maxConsecutiveErrors = this.config.reconnect.maxConsecutiveErrors || 10;
+      if (
+        this.consecutiveErrors >= maxConsecutiveErrors &&
+        this.prismaFactory
+      ) {
+        this.log(
+          'error',
+          `⚠️ ${this.consecutiveErrors} consecutive errors detected, performing hard reset...`
+        );
+        try {
+          await this.hardReset();
+          this.consecutiveErrors = 0;
+          // Retry operation after hard reset
+          return await operation();
+        } catch (resetError) {
+          this.log('error', 'Hard reset failed:', resetError);
+          throw error; // Throw original error
+        }
+      }
 
       // Call custom error handler
       if (this.config.onError) {
@@ -274,6 +394,9 @@ export class ResilientPrismaClient extends EventEmitter {
     this.refreshTimer = setInterval(async () => {
       this.log('debug', 'Performing periodic connection refresh...');
       try {
+        // Check connection age and perform preventive hard reset if needed
+        await this.checkConnectionAge();
+
         // Mark as disconnected first to ensure clean state
         this.connected = false;
 
@@ -337,6 +460,7 @@ export class ResilientPrismaClient extends EventEmitter {
     const uptime = this.lastSuccessfulConnection
       ? Date.now() - this.lastSuccessfulConnection.getTime()
       : 0;
+    const connectionAge = Date.now() - this.connectionCreatedAt.getTime();
 
     return {
       isConnected: this.connected,
@@ -346,6 +470,9 @@ export class ResilientPrismaClient extends EventEmitter {
       uptime,
       queryCount: this.queryCount,
       errorCount: this.errorCount,
+      consecutiveErrors: this.consecutiveErrors,
+      totalHardResets: this.totalHardResets,
+      connectionAge,
     };
   }
 
