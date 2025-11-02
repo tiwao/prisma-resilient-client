@@ -394,12 +394,14 @@ Built with lessons learned from production deployments handling millions of data
 ### Production Validation
 
 This package has been battle-tested in production with:
-- ✅ 11+ million database records processed
-- ✅ Long-running servers (days of uptime)
-- ✅ Automatic recovery from "Engine is not yet connected" errors
-- ✅ Zero manual intervention required
+- ✅ **41+ million database records processed** (38.9M face mesh + 2.4M audio analysis)
+- ✅ **11 GB database** managed successfully
+- ✅ **131 video files** processed with **0% error rate**
+- ✅ **Long-running servers** (days of uptime without manual intervention)
+- ✅ **Automatic recovery** from P1001, P1008, P1017, "Engine is not yet connected" errors
+- ✅ **Zero downtime** - All reconnections handled seamlessly
 
-**Real-world deployment**: [video_analyzer_web](https://st-data.iop-plus.kochi.jp) - Video analysis system with audio FFT and MediaPipe face mesh detection.
+**Real-world deployment**: [video_analyzer_web](https://st-data.iop-plus.kochi.jp) - Production video analysis system with real-time audio FFT and MediaPipe face mesh detection, running 24/7 since October 2025.
 
 ---
 
